@@ -1,4 +1,4 @@
-import { useState } from 'react';
+pimport { useState } from 'react';
 import './ModernDashboard.css';
 
 interface DashboardProps {
