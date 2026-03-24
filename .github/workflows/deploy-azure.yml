@@ -1,0 +1,122 @@
+name: Deploy to Azure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment (dev, staging, prod)'
+        default: 'prod'
+
+env:
+  AZURE_LOCATION: 'East US'
+  PROJECT_NAME: school-mgmt
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm test
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.build.outputs.image_uri }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Azure Container Registry
+        uses: azure/docker-login@v2
+        with:
+          login-server: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build and push Docker image
+        id: build
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t ${{ secrets.ACR_LOGIN_SERVER }}/$PROJECT_NAME:$IMAGE_TAG -t ${{ secrets.ACR_LOGIN_SERVER }}/$PROJECT_NAME:latest .
+          docker push ${{ secrets.ACR_LOGIN_SERVER }}/$PROJECT_NAME:$IMAGE_TAG
+          docker push ${{ secrets.ACR_LOGIN_SERVER }}/$PROJECT_NAME:latest
+          echo "image_uri=${{ secrets.ACR_LOGIN_SERVER }}/$PROJECT_NAME:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  deploy-frontend:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Build frontend
+        run: npx vite build
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy to Azure Blob Storage
+        run: |
+          az storage blob upload-batch \
+            --account-name "${{ env.PROJECT_NAME }}prodfe" \
+            --destination '$web' \
+            --source dist/ \
+            --overwrite
+
+      - name: Purge CDN
+        run: |
+          az cdn endpoint purge \
+            --resource-group "${{ env.PROJECT_NAME }}-prod-rg" \
+            --profile-name "${{ env.PROJECT_NAME }}-prod-cdn" \
+            --name "${{ env.PROJECT_NAME }}-prod-cdn-ep" \
+            --content-paths "/*"
+
+  deploy-infra:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: terraform
+        run: terraform plan -out=tfplan
+        env:
+          TF_VAR_cloud_provider: azure
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          TF_VAR_container_image: ${{ needs.build-and-push.outputs.image_uri }}
+          TF_VAR_azure_location: ${{ env.AZURE_LOCATION }}
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
+        env:
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}

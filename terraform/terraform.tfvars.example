@@ -1,0 +1,17 @@
+# Choose one: "aws", "azure", or "gcp"
+cloud_provider = "aws"
+
+project_name    = "school-mgmt"
+environment     = "prod"
+db_password     = "CHANGE_ME_strong_password_123!"
+container_image = "your-registry/school-mgmt-backend:latest"
+
+# AWS
+aws_region = "us-east-1"
+
+# Azure
+azure_location = "East US"
+
+# GCP
+gcp_project_id = "your-gcp-project-id"
+gcp_region     = "us-central1"
